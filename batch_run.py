@@ -41,6 +41,16 @@ for f in sorted(glob.glob(os.path.join(src, "*.txt"))):
     if name.endswith((".titles.txt", ".marked.txt", ".prepped.txt", ".clean.txt")):
         continue
     stem = name[:-4]
+    # v0.9n30-b 元数据旁车：<stem>.meta 每行 key=value（key ∈ title/creator/
+    # contributor，# 起行为注释）→ 透传 make_epub，缺省书名仍取文件茎
+    _meta = {}
+    _mp = os.path.join(src, stem + ".meta")
+    if os.path.exists(_mp):
+        for _l in open(_mp, encoding="utf-8"):
+            _l = _l.strip()
+            if "=" in _l and not _l.startswith("#"):
+                _k, _v = _l.split("=", 1)
+                _meta[_k.strip()] = _v.strip()
     marked = os.path.join(dst, name + ".marked.txt")
     prepped = os.path.join(dst, name + ".prepped.txt")
     clean = os.path.join(dst, stem + ".clean.txt")
@@ -60,8 +70,17 @@ for f in sorted(glob.glob(os.path.join(src, "*.txt"))):
             cur = prepped
         steps.append(("renumber", [os.path.join(here, "renumber_footnotes.py"),
                                    cur, "-o", clean, "--yes"]))
+        _margs = []
+        if _meta:
+            _margs = ["--title", _meta.get("title", stem)]
+            if _meta.get("creator"):
+                _margs += ["--author", _meta["creator"]]
+            if _meta.get("contributor"):
+                _margs += ["--contributor", _meta["contributor"]]
+        else:
+            _margs = ["--title", stem]
         steps.append(("epub", [os.path.join(here, "make_epub.py"), clean,
-                               "-o", epub, "--title", stem]))
+                               "-o", epub] + _margs))
         for tag, cmd in steps:
             r = subprocess.run([py] + cmd, capture_output=True, text=True,
                                encoding="utf-8", errors="replace")

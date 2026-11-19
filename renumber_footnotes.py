@@ -547,6 +547,14 @@ def _remove_headers(pages, headers, pagenum, top_n):
                 if pagenum and "line_hits" in pagenum and (pg.idx, i) in pagenum["line_hits"]:
                     removed += 1
                     continue
+            # v0.9n30 印刷签名形态（规范 backlog#1，Saintsbury 实证 32 处）：
+            # 任意非空行 ^VOL.\s+[IVXL]+\.?\s+\d{0,3}\s?[A-Za-z]{1,2}$（"VOL. II. B"/
+            # "VOL. II. 2 A"/"VOL. IL 2E" 等，含 catchword+字母与 IL 误植变体）→ 删除。
+            # 卷册号+印张签名无正文合法形态，误伤近零。
+            if re.fullmatch(r"VOL\.\s+[IVXL]+\.?\s+\d{0,3}\s?[A-Za-z]{1,2}", line.strip()):
+                removed += 1
+                _log("INFO", "STG4", f"印刷签名删除：第{pg.idx+1}页 {line.strip()[:24]!r}")
+                continue
             keep.append(line)
         pg.lines = keep
         pg.body_lines = keep   # v0.9c 审计#3: 输出读的是 body_lines，必须同步
@@ -1729,7 +1737,7 @@ def _dbg_diff_deleted(before, pages):
         _log("INFO", "DIFF", "remove_headers 删行含圈码 0 行")
 
 
-__VERSION__ = "v0.9n28-statguard1118"
+__VERSION__ = "v0.9n30-sign1119"
 def main():
     ap = argparse.ArgumentParser(
         description="按标号处理：去页眉/页码 + 注释归集章末 + 跨页引用修复。\n"

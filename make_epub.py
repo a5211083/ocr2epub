@@ -24,7 +24,7 @@ import zipfile
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
-__VERSION__ = "v1.7 1117-multihit"
+__VERSION__ = "v1.10-meta1119"
 
 # Windows GBK 控制台防护：不可编码字符按替换符输出，不抛 UnicodeEncodeError
 try:
@@ -334,6 +334,36 @@ def split_chapters(blocks, titles, notes_head, search_from, pre_scan=True, prof=
                 continue
             _seen_blk.add(_i)
             chapters.append((_t, _i))
+        # v1.10 章内嵌标题切分（规范 backlog#4 精化，瓦伊达书十二章实证：部题
+        # 页首段内嵌"十二、法西斯主义和波拿巴主义"+正文，致同章两文件/题与
+        # 正文混排）：多命中题且最早命中为长块、题串居块中部 → 块内切三段，
+        # 该题全部命中收拢为首切点（后续重复切点丢弃）。
+        _thits = {}
+        for _t, _i in chapters:
+            _thits.setdefault(re.sub(r"\s+", "", _t).rstrip("."), []).append(_i)
+        for _tn in list(_thits):
+            _idxs = _thits[_tn]
+            if len(_idxs) < 2 or _idxs[0] >= len(blocks):
+                continue
+            _first = _idxs[0]
+            _blk = blocks[_first]
+            if len(_blk) < len(_tn) + 10:
+                continue
+            _tt = next((_t for _t, _i in chapters
+                        if re.sub(r"\s+", "", _t).rstrip(".") == _tn and _i == _first), None)
+            if not _tt:
+                continue
+            _p = _blk.find(_tt)
+            if _p < 0:
+                _p = _blk.find(_tn)
+            if _p <= 0:
+                continue
+            blocks[_first:_first + 1] = [_blk[:_p], _blk[_p:_p + len(_tt)],
+                                         _blk[_p + len(_tt):]]
+            chapters = [(_t, _first if re.sub(r"\s+", "", _t).rstrip(".") == _tn
+                         else (_i + 2 if _i > _first else _i))
+                        for _t, _i in chapters]
+            break                      # 单病理处理，逐书一例足够
         _hit_t = {_t for _t, _ in chapters}
         # v1.7 降噪：规范化后同题的另一写法已被命中切走时不再误报（块去重所致）
         _hit_norm = {re.sub(r"\s+", "", t).rstrip(".") for t in _hit_t}
@@ -502,7 +532,7 @@ CONTAINER = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def build_epub(path, book_title, author, front_title, notes_head,
+def build_epub(path, book_title, author, contributor, front_title, notes_head,
                front, chapters, prof):
     uid = "urn:uuid:" + str(uuid.uuid4())
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -548,7 +578,8 @@ def build_epub(path, book_title, author, front_title, notes_head,
   </spine>
 </package>
 """ % (uid, esc(book_title), prof["epub_lang"],
-       "\n    <dc:creator>%s</dc:creator>" % esc(author) if author else "",
+       ("\n    <dc:creator>%s</dc:creator>" % esc(author) if author else "")
+       + ("\n    <dc:contributor role=\"trl\">%s</dc:contributor>" % esc(contributor) if contributor else ""),
        modified, "\n    ".join(manifest), "\n    ".join(spine))
 
     ncx = """<?xml version="1.0" encoding="utf-8"?>
@@ -610,6 +641,8 @@ def main():
     ap.add_argument("-o", "--output", help="输出 .epub 路径，默认 <input>.epub")
     ap.add_argument("--title", default=None, help="书名（默认取文件名）")
     ap.add_argument("--author", default="", help="作者")
+    ap.add_argument("--contributor", default="",
+                    help="其他贡献者（如译者，写入 dc:contributor opf:role=trl）")
     ap.add_argument("--front-title", default=None,
                     help="目录前内容的章节名（默认取语言档案 front_title；档案为空则用书名）")
     ap.add_argument("--notes-title", default=None,
@@ -691,7 +724,7 @@ def main():
     book_title = args.title or args.input.rsplit(".", 1)[0]
     front_title = args.front_title or prof["front_title"] or book_title
     out = args.output or (args.input.rsplit(".", 1)[0] + ".epub")
-    n = build_epub(out, book_title, args.author, front_title,
+    n = build_epub(out, book_title, args.author, args.contributor, front_title,
                    notes_head, front, chapters, prof)
     files = validate(out)
     print(f"输出：{out}（{files} 个成员，结构自检通过，含 {n} 个文档）")
