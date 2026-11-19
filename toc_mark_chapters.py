@@ -560,6 +560,24 @@ def extract_titles_auto(pages, toc_start, toc_end, prof):
                 nonmatch += 1
                 if nonmatch >= 3:
                     break
+    # v0.10i 目录条目清污：目录折行归并会把部题与章题黏成一题、把点线
+    # 与作者名残留在题尾（《作为群众运动的法西斯主义》实证："小资产阶级
+    # 的阶级组织一、法西斯主义独裁 ⋯3""总序 …新领域 ⋯衣俊卿"——部题黏连
+    # 使 make_epub 回查正文失配、3 章漏切折入邻章）。点线起全部截掉；
+    # 部题后黏章题（前缀无顿号、以 数字+、 起）拆开双入册。对所有书生效：
+    # 真实章题不含点线，章号黏连形态他书目录同构。
+    _clean = []
+    for _t in titles:
+        _t = re.sub(r"[⋯…]{1,}.*$", "", _t).strip()
+        if not _t:
+            continue
+        _m = re.match(r"^(.{2,}?)([一二三四五六七八九十]+、.+)$", _t)
+        if _m and "、" not in _m.group(1):
+            _clean.append(_m.group(1).strip())
+            _clean.append(_m.group(2).strip())
+        else:
+            _clean.append(_t)
+    titles = _clean
     # v0.10f 章题形态锚：语言档案可声明章题必须匹配的形态锚（Saintsbury
     # 多级目录实证：小节裸行 "On Satire"/"Scaligerana" 被"无页码干净短行
     # 是篇名"规则整批提为章题 → make_epub 按小节行切章、全书章界错乱）。
@@ -784,7 +802,7 @@ def find_chapters(pages, titles, threshold=0.8, search_from=0, exclude_pages=Non
 
 
 
-__VERSION__ = "v0.10h 1117-multihit"
+__VERSION__ = "v0.10i 1118-tocpurge"
 
 
 def main():
@@ -897,7 +915,9 @@ def main():
         try:
             _tp = os.path.splitext(args.output)[0] + ".toc"
             with open(_tp, "w", encoding="utf-8") as _tf:
-                _tf.write("\n".join(titles) + "\n")
+                # v0.10j 落盘规范化：章题剥尾点（"BOOK VI."→"BOOK VI"，判定单点内修
+                # 渲染层回查失配的正路；CJK 不受影响）。登记见规范 2026-11-19。
+                _tf.write("\n".join(t.rstrip(".") for t in titles) + "\n")
             print(f"章节清单 sidecar：{len(titles)} 条 → {_tp}")
         except Exception as _e:
             print(f"[WARN] titles sidecar 写入失败: {_e}", file=sys.stderr)

@@ -69,6 +69,14 @@ for f in sorted(glob.glob(os.path.join(src, "*.txt"))):
             print(f"  [{tag}] rc={r.returncode} {last[:160]}", flush=True)
             if r.returncode != 0:
                 raise RuntimeError(f"{tag} 失败 rc={r.returncode}")
+        g = subprocess.run([py, os.path.join(here, "conservation_check.py"), f, clean],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        _gl = (g.stdout or g.stderr).strip().splitlines()
+        print(f"  [gate] {_gl[0] if _gl else '(无输出)'}", flush=True)
+        if g.returncode != 0:
+            for _line in _gl[1:8]:
+                print(f"         {_line}", flush=True)
+            raise RuntimeError("守恒门 FAIL：正文缺失，禁止交付")
         ok.append(name)
     except Exception as e:
         print(f"  [跳过] {e}", flush=True)

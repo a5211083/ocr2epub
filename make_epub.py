@@ -169,9 +169,13 @@ def _match_block(block, t, bare, prof, nxt=""):
     v1.3：标题等值命中不得来自目录条目行——目录条目剥尾码后与章题等值
     （"我们今天为什么需要导读书？/iii"），会把章起点锚到目录页、卷首目录
     整块丢失（lacan 实证）。真章题行永不以页码收尾。"""
-    s = block.strip()
+    s = block.strip().lstrip(">")          # v1.8：注入标记残留（">总序"）剥除
     _lines = block.split("\n")
-    first = _lines[0].strip()
+    first = _lines[0].strip().lstrip(">")
+    if len(_lines) > 1:
+        _lines[1] = _lines[1].lstrip(">")
+    if len(_lines) > 2:
+        _lines[2] = _lines[2].lstrip(">")
     # v1.4：章题页首行常是章号（"KREU III"，行频不足未成切页点时与副题同块），
     # 副题在第二行——第二行等标题同样认（阿尔巴尼亚实证： 仅 III 因此漏配）
     second = _lines[1].strip() if len(_lines) > 1 else ""
@@ -187,31 +191,15 @@ def _match_block(block, t, bare, prof, nxt=""):
     if not _tail_page and nxt:
         _tail_page = bool(re.search(
             r"^\s*[/／]?\s*[ivxIVX0-9０-９]{1,4}\s*$", nxt.strip()))
-    if (ns == _norm_title(t) or nf == _norm_title(t) or n2 == _norm_title(t)
-            or n3 == _norm_title(t)) and not _tail_page:
+    # v1.9 比对归一化：两侧同剥尾点（sidecar 落盘剥点/正文保留原样，
+    # 比对 hygiene，非判定；CHAPTER I. 正文对 CHAPTER I 题）。
+    _nt_dot = _norm_title(t).rstrip(".")
+    if (ns == _nt_dot or ns.rstrip(".") == _nt_dot
+            or nf == _nt_dot or nf.rstrip(".") == _nt_dot
+            or n2 == _nt_dot or n2.rstrip(".") == _nt_dot
+            or n3 == _nt_dot or n3.rstrip(".") == _nt_dot) and not _tail_page:
         return True
-    # v1.7 形态锚档案下尾部句点不敏感：正文裸题行 "BOOK VI" 对目录题
-    # "BOOK VI." 不再失配（Saintsbury 实证，_norm_title 保留句点致
-    # BOOK VI 全书漏切）。仅形态锚档案生效，其余书行为不变。
-    _cta = prof.get("chapter_title_regex") if prof else None
-    if _cta and not _tail_page:
-        try:
-            _crx = re.compile(_cta)
-        except re.error:
-            _crx = None
-        if _crx and _crx.match(t):
-            _nt = _norm_title(t).rstrip(".")
-            if (ns.rstrip(".") == _nt or nf.rstrip(".") == _nt
-                    or n2.rstrip(".") == _nt or n3.rstrip(".") == _nt):
-                return True
-    nb = _norm_title(bare)
-    if (nf == nb or ns == nb) and not _tail_page \
-            and not any(p in first for p in prof["heading_punct"]):
-        return True
-    return False
 
-
-# ---------------------------------------------------------------- 目录解析
 
 def extract_titles(blocks, prof):
     """从目录区提取章节标题（顺序）与目录区结束位置。
@@ -260,7 +248,8 @@ def extract_titles(blocks, prof):
 
 
 
-def split_chapters(blocks, titles, notes_head, search_from, pre_scan=True, prof=None):
+def split_chapters(blocks, titles, notes_head, search_from, pre_scan=True, prof=None,
+                   pp_mode=False):
     """在目录区之后按标题精确切分。返回 (front_blocks, [chapter])，
     chapter = (title, [正文段落], [(num, text)])；正文段落不含注释块。"""
     chapters = []
@@ -417,15 +406,10 @@ def split_chapters(blocks, titles, notes_head, search_from, pre_scan=True, prof=
                                b.strip()[m.end():].strip()))
             else:
                 body2.append(b)
-        if inline:
+        if inline and not pp_mode:
             inline.sort(key=lambda x: x[0] if x[0] is not None else 999)
-            # v1.7 页脚注直排：并入后注释号出现重复（页级重启编号，renumber
-            # v0.9n27 直通模式产物）时，行内注保持原位留在正文，不收注块
-            _all_nums = [n for n, _ in notes if n is not None] + \
-                        [n for n, _ in inline if n is not None]
-            if len(_all_nums) == len(set(_all_nums)):
-                notes = notes + inline
-                body = body2
+            notes = notes + inline
+            body = body2
         out.append((t, body, notes))
     return front, out
 
@@ -455,15 +439,17 @@ class Linker:
 
 
 def chapter_xhtml(title, body, notes, notes_head, prof):
-    # v1.7 页脚注章节直排：同一章内注释号重复（页级重启编号，renumber
-    # v0.9n27 直通模式产物）时，注释就地并入正文段落、不出注块不链接——
-    # 注文保持 OCR 阅读顺序，规避 fn 号撞 id 与错误回链（Saintsbury 实证）
-    _nums = [n for n, _ in notes if n is not None]
-    if len(_nums) != len(set(_nums)):
-        body = list(body) + [
-            (("%s %s" % (marker_char(n), t)) if n is not None else t)
-            for n, t in notes]
-        notes = []
+    # v1.9 续段合并（格式化职责，登记见规范 2026-11-19）：前块不以句读收尾、
+    # 后块非章题/独立页码段/行内注形态 → 并入同段。不删字不改序。
+    _SENT9 = tuple("。！？!?；;：:…—–")
+    _mg = []
+    for _b in body:
+        if _mg and not _mg[-1].rstrip().endswith(_SENT9)                 and not is_heading(_b, prof)                 and not re.fullmatch(r"\s*\d{1,3}\s*", _b or "")                 and not INLINE_NOTE_RE.match(_b.strip() or ""):
+            _sep = " " if re.search(r"[A-Za-z]$", _mg[-1].rstrip()) else ""
+            _mg[-1] = _mg[-1] + _sep + _b
+        else:
+            _mg.append(_b)
+    body = _mg
     lk = Linker(set(n for n, _ in notes if n is not None))
     parts = ['<?xml version="1.0" encoding="utf-8"?>',
              '<!DOCTYPE html>',
@@ -679,7 +665,12 @@ def main():
         with open(toc_side, encoding="utf-8") as f:
             titles = [l.strip() for l in f if l.strip()]
         from_sidecar = True
-        print(f"读取章节清单 {toc_side}：{len(titles)} 条")
+        if titles and titles[0].startswith("#mode:"):   # 契约见规范 2026-11-19
+            _pp_mode = titles.pop(0).split(":", 1)[1].strip() == "per-page-notes"
+            print(f"读取章节清单 {toc_side}：{len(titles)} 条（体制 per-page-notes）")
+        else:
+            _pp_mode = False
+            print(f"读取章节清单 {toc_side}：{len(titles)} 条")
     else:
         titles, region_end = extract_titles(blocks, prof)
         if not titles:
@@ -691,7 +682,7 @@ def main():
     notes_head = args.notes_title or prof["notes_title"]
     front, chapters = split_chapters(blocks, titles, notes_head,
                                      search_from, pre_scan=not from_sidecar,
-                                     prof=prof)
+                                     prof=prof, pp_mode=_pp_mode)
     if not chapters:
         print("正文中未定位到任何章节", file=sys.stderr)
         sys.exit(1)

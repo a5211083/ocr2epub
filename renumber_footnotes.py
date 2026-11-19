@@ -711,6 +711,10 @@ def _strip_folio_tokens(pages, chains_list, top_n, min_form=4, stream_forms=None
                 if f.get("strip_line"):
                     del_idx.add(i)
                     deleted += 1
+                # v0.9n29d 引文守卫：页码后黏章题引文、其后仍有实质正文
+                # （rest >= 8 字）时，不得连带剥引文（法西斯主义书实证：
+                # "52七、“民主的危机”之前提到的没有…"被剥成"之前…"）。
+                # 只剥行首数字、保留全文。
                     for j in sorted(edge):
                         if j >= i:
                             break
@@ -724,6 +728,11 @@ def _strip_folio_tokens(pages, chains_list, top_n, min_form=4, stream_forms=None
                             rem_forms.add(_head_form(s2))   # 伴随行形态并入证书
                     if len(samples) < 60:   # v0.9n13: 样例上限，防日志/内存膨胀
                         samples.append((pg.idx + 1, s, "〔整行删除〕"))
+                elif len(rest.strip()) >= 8:
+                    pg.body_lines[i] = re.sub(r"^\s*\d{1,3}\s*", "", s).strip()
+                    stripped += 1
+                    if len(samples) < 60:
+                        samples.append((pg.idx + 1, s, "〔引文守卫：仅剥数字〕"))
                 else:
                     pg.body_lines[i] = rest.strip()
                     stripped += 1
@@ -1720,7 +1729,7 @@ def _dbg_diff_deleted(before, pages):
         _log("INFO", "DIFF", "remove_headers 删行含圈码 0 行")
 
 
-__VERSION__ = "v0.9n27-perpage1118"
+__VERSION__ = "v0.9n28-statguard1118"
 def main():
     ap = argparse.ArgumentParser(
         description="按标号处理：去页眉/页码 + 注释归集章末 + 跨页引用修复。\n"
@@ -1999,13 +2008,35 @@ def main():
         # v0.9n22 统计页眉行检测器（独立，与三检测器互不设门）
         _first_content = starts[0][0] if starts else 10**9
         _stat = _detect_stat_headers(pages, args.pages, toc_pages, _first_content)
+
         for _form, _dels in _stat:
             for _pi, _li in sorted(_dels, reverse=True):
                 # v0.9n22-fix：章体正文来自 STG3 快照的 body_lines，
                 # 必须从 body_lines 删（pg.lines 删了不进输出）
                 _pg = pages[_pi]
+                # v0.9n28 内容校验闸：索引在 lines（含注行）上统计、在
+                # body_lines（注行已抽走）上删除，两列表错位时会删到正文
+                # 行（法西斯主义书实证：段内双孤立页码行使统计态偏移，
+                # 正文整行被误删）。删除前必须命中统计形态本身，否则跳过
+                # 并留痕。
+                # v0.9n28 内容锚定删除：_li 在统计侧与执行侧列表可能错位
+                # （法西斯主义书实证：误删正文整行且全程静默）。以统计时
+                # 捕获的行内容为准，在执行侧 body_lines 里找同源行删除；
+                # 找不到即拦下并 WARN（删除可见性纪律：凡删必留痕）。
                 if _li < len(_pg.body_lines):
-                    del _pg.body_lines[_li]
+                    _bl = _pg.body_lines[_li].strip()
+                    _nhv = normalize_header(_bl)
+                    if _cert_hit_forms(_nhv, {_form}) or _bl == _form \
+                            or _nhv in {_form, _form.rstrip('.')}:
+                        del _pg.body_lines[_li]
+                        if _li < len(_pg.lines):
+                            del _pg.lines[_li]      # v0.9n28 master 同步，防下游索引级联
+                        _log("INFO", "STG4",
+                             f"统计页眉删除：第{_pi+1}页行{_li} {_bl[:24]!r}")
+                    else:
+                        _log("WARN", "STG4",
+                             f"统计页眉删除被闸拦下：第{_pi+1}页行{_li} 形态不匹配"
+                             f"（{_bl[:24]!r} vs {_form[:24]!r}）")
         if pagenum is None:
             pagenum = _detect_pagenum_relaxed(pages, args.pages)
             if pagenum:
@@ -2165,6 +2196,18 @@ def main():
             ch.body = page_join.join(_body_pages)
             # v0.9c 审计#6 的章题去重已下沉 _generate_output 段落级（v0.9n16）
 
+        # v0.9n29 段级纯页码页删除：\x0c 切页产生的孤立页码段（无伴生
+        # 页眉、无正文）此前漏出到成品（"人14绝对"型残留同族）。仅删
+        # "全部非空行都匹配 PAGENUM_RE 且非空行数 <=2" 的页，凡删留痕。
+        _kept = []
+        for _pg in pages:
+            _ne = [l for l in _pg.lines if l.strip()]
+            if len(_ne) <= 2 and all(PAGENUM_RE.match(l.strip()) for l in _ne) and _ne:
+                _log("INFO", "STG6",
+                     f"段级纯页码页删除：第{_pg.idx+1}页 ({'/'.join(l.strip() for l in _ne)})")
+                continue
+            _kept.append(_pg)
+        pages[:] = _kept
         _log("INFO", "STG ", "6/6 _generate_output")
         out_text = _generate_output(chapters, args.renumber, args.notes_title,
                                     page_join, reflow=not args.no_reflow,
@@ -2192,8 +2235,14 @@ def main():
         for _cand in dict.fromkeys(_cands):
             if os.path.exists(_cand):
                 import shutil as _sh
-                _sh.copyfile(_cand, _stem_out + ".toc")
-                print(f"[INFO] 章节清单转写：{_cand} → {_stem_out}.toc")
+                if _per_page_mode >= 5:   # v0.9n29c 体制标记发射（契约见规范 2026-11-19）
+                    _src = open(_cand, encoding="utf-8").read()
+                    open(_stem_out + ".toc", "w", encoding="utf-8").write(
+                        "#mode: per-page-notes\n" + _src)
+                else:
+                    _sh.copyfile(_cand, _stem_out + ".toc")
+                print(f"[INFO] 章节清单转写：{_cand} → {_stem_out}.toc"
+                      f"{'（体制 per-page-notes）' if _per_page_mode >= 5 else ''}")
                 break
         # ---- [VERIFY] 结果级校验：注释真动了没有，看文件不看过程 ----
         try:
